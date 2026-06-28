@@ -843,23 +843,6 @@ See: [`examples/nodejs/middleware/auth.js`](examples/nodejs/middleware/auth.js) 
 
 ---
 
-## 📸 Screenshots
-
-> The following screenshots demonstrate the workflow described in this tutorial. Replace these placeholders with your own screenshots after running the examples.
-
-| Screenshot | Description |
-|-----------|-------------|
-| ![AWS Console](screenshots/placeholder-aws-console.png) | AWS Secrets Manager console showing stored secrets |
-| ![Vault UI](screenshots/placeholder-vault-ui.png) | HashiCorp Vault UI showing KV v2 secret paths |
-| ![Azure Portal](screenshots/placeholder-azure-portal.png) | Azure Key Vault portal showing secret values |
-| ![Python Output](screenshots/placeholder-python-output.png) | Python example output showing successful secret retrieval |
-| ![Node.js Output](screenshots/placeholder-nodejs-output.png) | Node.js example output with Express server running |
-| ![FastAPI Docs](screenshots/placeholder-fastapi-docs.png) | FastAPI Swagger UI showing available endpoints |
-| ![Docker Compose](screenshots/placeholder-docker-compose.png) | Docker Compose running all services |
-| ![Kubernetes Pods](screenshots/placeholder-k8s-pods.png) | Kubernetes pods running with Vault Agent injection |
-
----
-
 ## 💻 Language Support
 
 This repository provides production-grade examples in five languages, covering the full enterprise stack:
