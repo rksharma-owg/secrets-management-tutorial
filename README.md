@@ -1017,27 +1017,6 @@ secrets-management-tutorial/
 
 ---
 
-## 🤝 Contributing
-
-Contributions are welcome! This is an open educational resource. To contribute:
-
-1. Fork the repository
-2. Create a feature branch: `git checkout -b feature/your-feature`
-3. Make your changes (ensure code is well-commented and educational)
-4. Test your examples work with at least one secret provider
-5. Commit with a descriptive message: `git commit -m "Add Terraform examples for Vault"`
-6. Push and open a Pull Request
-
-### Areas We'd Love Contributions
-
-- Additional language examples (Go, Rust)
-- GitHub Actions / GitLab CI integration examples
-- Advanced Vault use cases (Transit engine, PKI engine)
-- Pulumi / CloudFormation IaC alternatives
-- Real-world case studies and lessons learned
-
----
-
 ## 📄 License
 
 This repository is released under the [MIT License](LICENSE). Use it freely for learning, teaching, and production reference.
