@@ -60,7 +60,7 @@ Whether you're a junior developer writing your first API or a senior engineer ha
 
 ## ⚠️ Why .env Files Are Risky
 
-The `.env` file is the most common way developers handle secrets — and the most dangerous. Here's a breakdown of the specific risks that make `.env` files unsuitable for any environment beyond local development:
+The `.env` file is the most common way developers handle secrets — and `.env` files become dangerous when used outside isolated local development. Because `.env` is not a security strategy. Here's a breakdown of the specific risks that make `.env` files unsuitable for any environment beyond local development:
 
 ### The Risk Chain
 
@@ -968,7 +968,7 @@ This repository is released under the [MIT License](LICENSE). Use it freely for 
 ---
 
 <p align="center">
-  <strong>Built with ❤️ for developers who take security seriously.</strong>
+  <strong>Built for developers who know hardcoded secrets become breach reports.</strong>
   <br/><br/>
   <img src="https://img.shields.io/badge/Stop%20using%20.env-Use%20Secrets%20Management-red?style=for-the-badge" alt="Stop using .env" />
 </p>
