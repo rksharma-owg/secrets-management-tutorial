@@ -8,9 +8,13 @@
 <p align="center">
   <img src="https://img.shields.io/badge/Python-3.12+-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python" />
   <img src="https://img.shields.io/badge/Node.js-20+-339933?style=flat-square&logo=node.js&logoColor=white" alt="Node.js" />
+  <img src="https://img.shields.io/badge/Java-17+-ED8B00?style=flat-square&logo=openjdk&logoColor=white" alt="Java" />
+  <img src="https://img.shields.io/badge/.NET-8+-512BD4?style=flat-square&logo=dotnet&logoColor=white" alt=".NET" />
   <img src="https://img.shields.io/badge/FastAPI-0.109+-009688?style=flat-square&logo=fastapi&logoColor=white" alt="FastAPI" />
+  <img src="https://img.shields.io/badge/Spring_Boot-3.2+-6DB33F?style=flat-square&logo=springboot&logoColor=white" alt="Spring Boot" />
   <img src="https://img.shields.io/badge/Docker-Ready-2496ED?style=flat-square&logo=docker&logoColor=white" alt="Docker" />
   <img src="https://img.shields.io/badge/Kubernetes-Ready-326CE5?style=flat-square&logo=kubernetes&logoColor=white" alt="Kubernetes" />
+  <img src="https://img.shields.io/badge/Terraform-Ready-7B42BC?style=flat-square&logo=terraform&logoColor=white" alt="Terraform" />
 </p>
 
 <p align="center">
@@ -856,11 +860,28 @@ See: [`examples/nodejs/middleware/auth.js`](examples/nodejs/middleware/auth.js) 
 
 ---
 
+## 💻 Language Support
+
+This repository provides production-grade examples in five languages, covering the full enterprise stack:
+
+| Language | Framework | Secret Providers | Key Features |
+|----------|-----------|-----------------|--------------|
+| **Python** | boto3, hvac, azure-identity | AWS, Vault, Azure | Factory pattern, structured logging, async support |
+| **Node.js** | @aws-sdk, node-vault, @azure SDK | AWS, Vault, Azure | Express server, JWT middleware, connection pooling |
+| **FastAPI** | FastAPI + SQLAlchemy | AWS, Vault, Azure | Lifespan loading, async DB, OpenAI integration |
+| **Java** | Spring Boot 3.2 + Spring Cloud Vault | AWS, Vault, Azure | @ConditionalOnProperty, @Value injection, IAM roles |
+| **.NET** | ASP.NET Core 8 | AWS, Vault, Azure | DI configuration providers, [JsonIgnore], Managed Identity |
+
+Every language follows the same security contract: identity-based authentication, runtime secret fetching, structured logging with redaction, and zero hardcoded credentials.
+
+---
+
 ## 📁 Repository Structure
 
 ```
 secrets-management-tutorial/
 ├── README.md                          # You are here — the main tutorial
+├── LICENSE                            # MIT License
 ├── .gitignore                         # Excludes .env, secrets, credentials, caches
 ├── requirements.txt                   # Python dependencies
 ├── package.json                       # Node.js dependencies
@@ -890,10 +911,66 @@ secrets-management-tutorial/
 │   │   │   └── auth.js                # JWT authentication middleware
 │   │   └── config/
 │   │       └── database.js            # Database pool with secret-based credentials
-│   └── fastapi/
-│       ├── app.py                     # FastAPI app with lifespan-based secret loading
-│       ├── auth.py                    # JWT auth manager using secret manager
-│       └── database.py                # Async SQLAlchemy with secret rotation
+│   ├── fastapi/
+│   │   ├── app.py                     # FastAPI app with lifespan-based secret loading
+│   │   ├── auth.py                    # JWT auth manager using secret manager
+│   │   └── database.py                # Async SQLAlchemy with secret rotation
+│   ├── java-springboot/
+│   │   ├── pom.xml                    # Maven dependencies (Spring Cloud Vault, AWS SDK, Azure SDK)
+│   │   ├── README.md                  # Java-specific guide: Spring Boot, @Value injection, rotation
+│   │   └── src/main/java/com/tutorial/secrets/
+│   │       ├── SecretsTutorialApplication.java  # Main class with fail-fast startup validation
+│   │       ├── config/
+│   │       │   ├── SecretManagerConfig.java     # Factory: selects provider via SECRET_PROVIDER
+│   │       │   └── VaultConfig.java             # Spring Cloud Vault auto-configuration
+│   │       ├── service/
+│   │       │   ├── SecretManagerService.java    # Interface (provider-agnostic contract)
+│   │       │   ├── AwsSecretsService.java       # AWS impl with IAM role auth + rotation
+│   │       │   ├── VaultSecretsService.java     # Vault impl with KV v2 + version tracking
+│   │       │   ├── AzureKeyVaultService.java    # Azure impl with Managed Identity
+│   │       │   └── SecretRetrievalException.java
+│   │       ├── controller/
+│   │       │   └── HealthController.java        # REST endpoints (no secrets in responses)
+│   │       └── model/
+│   │           ├── DatabaseCredentials.java     # @JsonIgnore on password, JDBC URL builder
+│   │           ├── JwtConfig.java               # Algorithm validation, key strength check
+│   │           └── OpenAIConfig.java            # @JsonIgnore on apiKey, test key detection
+│   └── dotnet/
+│       ├── SecretsTutorial.csproj       # .NET 8 with AWS, VaultSharp, Azure SDK packages
+│       ├── README.md                    # .NET-specific guide: DI providers, Managed Identity, Swagger
+│       ├── Program.cs                    # DI factory, fail-fast startup, security headers
+│       ├── appsettings.json              # Non-sensitive defaults only (NEVER secrets here)
+│       ├── Configuration/
+│       │   └── SecretManagerExtensions.cs  # ASP.NET Core IConfiguration provider bridge
+│       ├── Services/
+│       │   ├── ISecretManagerService.cs    # Interface + SecretRetrievalException
+│       │   ├── AwsSecretsManagerService.cs # AWS impl with IAM roles, version cache
+│       │   ├── VaultSecretsService.cs     # Vault impl with KV v2, lease tracking
+│       │   └── AzureKeyVaultService.cs    # Azure impl with DefaultAzureCredential
+│       ├── Controllers/
+│       │   └── SecretsController.cs        # API endpoints with sanitized DTOs
+│       └── Models/
+│           ├── DatabaseCredentials.cs     # [JsonIgnore] on Password, connection string builder
+│           ├── JwtConfig.java             # Key strength validation, KeyFingerprint for safe logging
+│           └── OpenAIConfig.cs            # [JsonIgnore] on ApiKey, ApiKeyPrefix for debug
+│
+├── terraform/
+│   ├── README.md                          # IaC overview, state security best practices
+│   ├── aws-secrets-manager/
+│   │   ├── main.tf                        # Secrets, rotation, IAM roles, least-privilege policy
+│   │   ├── variables.tf                   # Region, environment, rotation config
+│   │   ├── outputs.tf                     # Secret ARNs, IAM role ARN
+│   │   └── README.md                      # AWS Terraform guide
+│   ├── hashicorp-vault/
+│   │   ├── main.tf                        # KV v2 engine, policies, K8s auth, audit logging
+│   │   ├── variables.tf                   # Vault addr, K8s host, app names
+│   │   ├── outputs.tf                     # Secret paths, policy names, auth roles
+│   │   └── README.md                      # Vault Terraform guide
+│   └── azure-key-vault/
+│       ├── main.tf                        # Key Vault, secrets, access policy, Managed Identity
+│       ├── variables.tf                   # Location, vault name, private endpoint toggle
+│       ├── outputs.tf                     # Vault URI, secret names, principal ID
+│       └── README.md                      # Azure Terraform guide
 │
 ├── docker/
 │   ├── Dockerfile.python              # Multi-stage Python Dockerfile (non-root user)
@@ -953,10 +1030,10 @@ Contributions are welcome! This is an open educational resource. To contribute:
 
 ### Areas We'd Love Contributions
 
-- Terraform / Pulumi IaC examples for provisioning secret managers
-- Additional language examples (Go, Java, Rust)
+- Additional language examples (Go, Rust)
 - GitHub Actions / GitLab CI integration examples
 - Advanced Vault use cases (Transit engine, PKI engine)
+- Pulumi / CloudFormation IaC alternatives
 - Real-world case studies and lessons learned
 
 ---

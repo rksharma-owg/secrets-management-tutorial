@@ -1,0 +1,234 @@
+# =============================================================================
+# Spring Boot Configuration for Secrets Management Tutorial
+# =============================================================================
+#
+# SECURITY DESIGN PRINCIPLES FOR THIS FILE:
+#
+# 1. NO SECRETS IN THIS FILE — Every value that could be a secret is sourced
+#    from an environment variable with a safe default (usually empty).
+#
+# 2. ENVIRONMENT VARIABLE DEFAULTS — The ${VAR:default} syntax provides
+#    development defaults but NEVER defaults to real credentials.
+#
+# 3. DEFENSE IN DEPTH — Even if this file is committed to version control
+#    or accidentally exposed, it reveals only infrastructure endpoints,
+#    never authentication material.
+#
+# 4. PROVIDER ISOLATION — Each secret provider has its own section.
+#    Only the active provider (selected via SECRET_PROVIDER) is used at runtime.
+#
+# WARNING: The /actuator/env endpoint can expose ALL properties, including
+# secrets injected by Vault/AWS/Azure into the Spring Environment.
+# Always disable or secure actuator endpoints in production:
+#   management.endpoint.env.enabled=false
+# =============================================================================
+
+spring:
+  application:
+    # Application name used by Vault and config servers as a key prefix.
+    # E.g., Vault will look for secrets at secret/myapp, secret/myapp/dev, etc.
+    name: secrets-tutorial
+
+  # Profile is ALWAYS set from environment — never hardcoded.
+  # In Kubernetes, set this via the SPRING_PROFILES_ACTIVE env var in your Deployment.
+  # Common profiles: dev, staging, prod, vault, aws, azure
+  profiles:
+    active: ${SPRING_PROFILES_ACTIVE:dev}
+
+  # =====================================================================
+  # DATA SOURCE CONFIGURATION
+  # =====================================================================
+  # SECURITY: Database credentials are NEVER stored here.
+  # They are fetched at runtime from the active secret provider.
+  # The DataSource bean is built programmatically in config classes
+  # using credentials retrieved from Vault/AWS/Azure.
+  # =====================================================================
+  datasource:
+    # HikariCP connection pool settings (non-sensitive)
+    hikari:
+      maximum-pool-size: ${DB_POOL_SIZE:10}
+      minimum-idle: ${DB_MIN_IDLE:2}
+      connection-timeout: 30000
+      # Idle timeout (ms) — connections are closed after this period
+      idle-timeout: 600000
+      # Max lifetime (ms) — prevents use of stale connections
+      max-lifetime: 1800000
+
+# =============================================================================
+# SECRET PROVIDER SELECTION
+# =============================================================================
+# This is the ONLY place where the secret provider is configured.
+# The value is read from the SECRET_PROVIDER environment variable.
+#
+# Supported values:
+#   "vault"  — HashiCorp Vault (default for development)
+#   "aws"    — AWS Secrets Manager
+#   "azure"  — Azure Key Vault
+#
+# SECURITY: This uses a custom property "secret.provider" (not Spring Cloud's)
+# to give explicit, auditable control over which provider is active.
+# The @ConditionalOnProperty annotations in service classes use this value
+# to select exactly one SecretManagerService implementation.
+# =============================================================================
+secret:
+  provider: ${SECRET_PROVIDER:vault}
+
+# =============================================================================
+# HASHICORP VAULT CONFIGURATION
+# =============================================================================
+# Spring Cloud Vault auto-configuration reads these properties to connect
+# to Vault and pull secrets into the Spring Environment.
+#
+# HOW IT WORKS:
+# 1. At startup, Spring Cloud Vault connects to vault.uri using the vault.token
+# 2. It reads the KV backend (secret/myapp, secret/myapp/dev, secret/application)
+# 3. All key-value pairs are injected as Spring properties
+# 4. You access them via @Value("${my-secret-key}") — provider-agnostic!
+#
+# PRODUCTION AUTHENTICATION (in order of preference):
+# 1. Vault Agent sidecar (recommended for Kubernetes) — token is injected via
+#    shared memory, never touches environment variables or this config file
+# 2. Kubernetes service account authentication — uses the pod's service account
+#    JWT token, no static token needed
+# 3. AppRole authentication — machine-to-machine with role-id and secret-id
+# 4. Token authentication (below) — ONLY for development, NEVER for production
+#
+# VAULT AGENT SIDECAR PATTERN (Kubernetes):
+# When using Vault Agent injector, you don't need ANY of these settings.
+# The injector mutates your pod spec to:
+# - Add a Vault Agent sidecar container
+# - Mount a shared volume for token/secret sharing
+# - Render secrets as files that Spring Cloud Vault reads
+# =============================================================================
+spring.cloud.vault:
+  # Vault server address — NEVER use HTTPS for development, ALWAYS for production
+  uri: ${VAULT_ADDR:http://localhost:8200}
+
+  # SECURITY WARNING: Token-based auth is the LEAST secure method.
+  # - NEVER commit a real token to version control
+  # - NEVER log the token
+  # - In production, use AppRole or Kubernetes auth (see above)
+  # - The empty default ensures the app fails fast if VAULT_TOKEN is not set
+  token: ${VAULT_TOKEN:}
+
+  # HTTP scheme — must be "https" in production
+  scheme: ${VAULT_SCHEME:http}
+
+  # KV (Key-Value) secrets engine configuration
+  kv:
+    enabled: true
+    # KV backend path in Vault (default "secret" for KV v2)
+    backend: secret
+    # Application name for secret lookup — creates paths like secret/secrets-tutorial
+    application-name: ${VAULT_APP_NAME:myapp}
+
+  # Timeout settings (non-sensitive)
+  connection-timeout: 5000
+  read-timeout: 15000
+
+# =============================================================================
+# AWS CONFIGURATION
+# =============================================================================
+# SECURITY: Only the region is configured here. All authentication uses
+# AWS SDK's DefaultCredentialsProvider chain:
+#   1. Environment variables (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)
+#   2. ECS container credentials (AWS_CONTAINER_CREDENTIALS_RELATIVE_URI)
+#   3. EC2/EKS instance metadata (IAM role)
+#   4. Web Identity Token (IRSA on EKS)
+#   5. SSO / credential process / shared credentials file
+#
+# In production on ECS/EKS/EC2, the IAM role provides credentials
+# automatically — ZERO static credentials needed.
+#
+# NEVER add aws.accessKeyId or aws.secretKey to this file.
+# =============================================================================
+aws:
+  region: ${AWS_REGION:us-east-1}
+  # Optional: Secrets Manager endpoint override (for LocalStack in dev)
+  secrets-endpoint: ${AWS_SECRETS_ENDPOINT:}
+  # Optional: Custom secrets prefix/path
+  secrets-prefix: ${AWS_SECRETS_PREFIX:secrets-tutorial/}
+
+# =============================================================================
+# AZURE CONFIGURATION
+# =============================================================================
+# SECURITY: Only the Key Vault URL is configured. Authentication uses
+# DefaultAzureCredential which chains:
+#   1. Environment variables (AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, AZURE_TENANT_ID)
+#   2. Managed Identity (system-assigned or user-assigned) ← PRODUCTION
+#   3. Visual Studio Code credentials
+#   4. Azure CLI credentials
+#   5. Azure PowerShell credentials
+#
+# MANAGED IDENTITY (recommended for production):
+# When running on Azure App Service, AKS, or Azure VM, enable a system-assigned
+# or user-assigned managed identity and grant it Key Vault access via
+# Azure RBAC or Access Policies. The DefaultAzureCredential will automatically
+# pick up the managed identity — no secrets needed anywhere.
+# =============================================================================
+azure:
+  keyvault:
+    url: ${AZURE_VAULT_URL:}
+    # Optional: specify a user-assigned managed identity client ID
+    managed-identity-client-id: ${AZURE_MANAGED_IDENTITY_CLIENT_ID:}
+
+# =============================================================================
+# ACTUATOR CONFIGURATION
+# =============================================================================
+# SECURITY: Some actuator endpoints can expose sensitive information.
+# - /actuator/env — shows ALL environment properties including secrets
+# - /actuator/configprops — shows configuration property values
+# In production, disable these or require authentication.
+# =============================================================================
+management:
+  endpoints:
+    web:
+      exposure:
+        # Only expose health endpoint by default
+        include: health,info
+  endpoint:
+    health:
+      show-details: ${ACTUATOR_HEALTH_DETAILS:never}
+      # NEVER set to "always" in production — it can leak connection details
+    env:
+      # DISABLED by default — /actuator/env exposes secrets!
+      enabled: false
+
+# =============================================================================
+# LOGGING CONFIGURATION
+# =============================================================================
+# SECURITY RULES FOR LOGGING:
+# 1. NEVER log secret values — not even partially masked
+# 2. Log secret OPERATIONS (fetch, rotate, error) for audit trails
+# 3. Use DEBUG level for Vault SDK only in development
+# 4. In production, set root level to WARN or ERROR
+# =============================================================================
+logging:
+  level:
+    root: ${LOG_LEVEL_ROOT:INFO}
+    # Application logging — INFO for operational visibility
+    com.tutorial.secrets: ${LOG_LEVEL_APP:INFO}
+    # Vault SDK logging — DEBUG in dev for troubleshooting, WARN in prod
+    org.springframework.vault: ${LOG_LEVEL_VAULT:DEBUG}
+    # AWS SDK logging — only errors by default (can log request bodies at TRACE)
+    software.amazon.awssdk: ${LOG_LEVEL_AWS:WARN}
+    # Azure SDK logging
+    com.azure: ${LOG_LEVEL_AZURE:WARN}
+    # Suppress noisy HikariCP logging
+    com.zaxxer.hikari: ${LOG_LEVEL_HIKARI:WARN}
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
+    # SECURITY: Do NOT include MDC or environment variables in log format
+    # as they may contain sensitive data
+
+# =============================================================================
+# SERVER CONFIGURATION (non-sensitive)
+# =============================================================================
+server:
+  port: ${SERVER_PORT:8080}
+  # Security headers — enable these in production
+  servlet:
+    session:
+      cookie:
+        http-only: true
+        secure: ${COOKIE_SECURE:false}

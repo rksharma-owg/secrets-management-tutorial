@@ -1,0 +1,273 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    Secrets Management Tutorial - Java Spring Boot Example
+
+    SECURITY NOTE: This pom.xml intentionally includes dependencies for multiple
+    secret providers (Vault, AWS, Azure) to demonstrate the provider-agnostic
+    pattern. In production, you would typically only include the provider(s)
+    you actually use to minimize your dependency footprint and attack surface.
+
+    Each dependency is annotated with its security purpose. Never add
+    dependencies that you don't actively use — every library is potential
+    attack surface for supply-chain attacks.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+         https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <!--
+        Spring Boot 3.2.x parent POM provides:
+        - Dependency management (versions) for all Spring modules
+        - Plugin management for maven-spring-boot, maven-failsafe, etc.
+        - Sensible defaults for Java compilation, resource filtering, and testing
+        - Requires Java 17+ (matches our target platform)
+    -->
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.2.5</version>
+        <relativePath/> <!-- lookup parent from Maven Central, not local repo -->
+    </parent>
+
+    <groupId>com.tutorial.secrets</groupId>
+    <artifactId>secrets-tutorial</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
+    <name>Secrets Management Tutorial - Spring Boot</name>
+    <description>
+        Production-quality Spring Boot 3.2 example demonstrating secure secrets
+        management with HashiCorp Vault, AWS Secrets Manager, and Azure Key Vault.
+        No hardcoded credentials. All configuration via environment variables.
+    </description>
+
+    <properties>
+        <!-- Java 17 LTS — minimum for Spring Boot 3.x, provides records, sealed classes -->
+        <java.version>17</java.version>
+
+        <!--
+            Spring Cloud version aligned with Spring Boot 3.2.x.
+            See: https://spring.io/projects/spring-cloud#overview
+            The BOM ensures compatible versions across all Spring Cloud modules.
+        -->
+        <spring-cloud.version>2023.0.1</spring-cloud.version>
+
+        <!-- AWS SDK v2 — preferred over v1 for non-blocking I/O and modern API -->
+        <aws-sdk.version>2.25.16</aws-sdk.version>
+
+        <!-- Azure SDK version — managed by BOM below -->
+        <azure-sdk.version>4.8.0</azure-sdk.version>
+        <azure-identity.version>1.11.4</azure-identity.version>
+    </properties>
+
+    <!--
+        Spring Cloud BOM provides version management for Vault, Config, Circuit
+        Breaker, and other Spring Cloud modules. This prevents version conflicts
+        and ensures the exact combination tested by the Spring Cloud team.
+    -->
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>org.springframework.cloud</groupId>
+                <artifactId>spring-cloud-dependencies</artifactId>
+                <version>${spring-cloud.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <dependencies>
+        <!--
+            SPRING BOOT STARTER - WEB
+            Purpose: Provides embedded Tomcat, Spring MVC, and Jackson for REST APIs.
+            Security note: Ensure you also add spring-boot-starter-security in
+            production to enable authentication/authorization on all endpoints.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+
+        <!--
+            SPRING BOOT STARTER - JDBC
+            Purpose: Provides DataSource auto-configuration, HikariCP connection pool,
+            JdbcTemplate, and transaction management.
+            Security note: Database credentials are fetched from the secret provider
+            at runtime. Never configure them in application.properties/yml directly.
+            Use Spring Cloud Vault's database secret backend or AWS RDS credential
+            rotation for dynamic database credentials.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-jdbc</artifactId>
+        </dependency>
+
+        <!--
+            SPRING BOOT STARTER - ACTUATOR
+            Purpose: Production-ready monitoring endpoints (/health, /info, /metrics, /env).
+            Security note: The /env endpoint can EXPOSE secrets loaded into the
+            Spring Environment. Always secure actuator endpoints behind authentication.
+            In production, set: management.endpoint.env.enabled=false
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+
+        <!--
+            SPRING CLOUD STARTER - VAULT CONFIG
+            Purpose: Auto-configures Vault integration. Secrets are pulled from Vault's
+            KV store and injected directly into the Spring Environment as properties.
+            This means @Value("${my-secret}") works transparently — no provider-specific
+            code needed for basic secret access.
+            Security features:
+            - Supports Vault Agent sidecar pattern (token is never in app memory)
+            - Supports Kubernetes service account authentication (no static tokens)
+            - Supports AppRole authentication (machine-to-machine)
+            - Lease-based dynamic secrets are auto-renewed
+        -->
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-vault-config</artifactId>
+        </dependency>
+
+        <!--
+            AWS SDK V2 - SECRETS MANAGER
+            Purpose: Programmatic access to AWS Secrets Manager for fetching, creating,
+            and rotating secrets.
+            Security note: Uses DefaultCredentialsProvider which chains multiple
+            credential sources (env vars, ECS task role, EC2 instance profile,
+            IAM role assumption). NO static access keys needed in code or config.
+            The DefaultCredentialsProvider resolves credentials in this order:
+            1. Environment variables (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)
+            2. System properties
+            3. Web Identity Token (EKS/ECS)
+            4. ECS container credentials
+            5. EC2 instance profile / IAM role
+            6. SSO / credential process
+        -->
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>secretsmanager</artifactId>
+            <version>${aws-sdk.version}</version>
+        </dependency>
+
+        <!--
+            AZURE - KEY VAULT SECRETS CLIENT
+            Purpose: Azure Key Vault secret client for storing and retrieving secrets.
+            Security note: Uses DefaultAzureCredential for authentication which
+            automatically chains: Managed Identity, Visual Studio, Azure CLI,
+            environment variables, and more. In production on Azure, Managed Identity
+            is the recommended approach — zero static credentials.
+        -->
+        <dependency>
+            <groupId>com.azure</groupId>
+            <artifactId>azure-security-keyvault-secrets</artifactId>
+            <version>${azure-sdk.version}</version>
+        </dependency>
+
+        <!--
+            AZURE - IDENTITY
+            Purpose: Provides DefaultAzureCredential and other credential classes
+            for authenticating to Azure services.
+            Security note: DefaultAzureCredential is the recommended approach for
+            Azure services. It tries multiple authentication methods in order:
+            1. Environment (AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, AZURE_TENANT_ID)
+            2. Managed Identity (system-assigned or user-assigned)
+            3. Visual Studio Code
+            4. Azure CLI
+            5. Azure PowerShell
+            In production, only Managed Identity should succeed, ensuring no
+            developer credentials leak into production.
+        -->
+        <dependency>
+            <groupId>com.azure</groupId>
+            <artifactId>azure-identity</artifactId>
+            <version>${azure-identity.version}</version>
+        </dependency>
+
+        <!--
+            VALIDATION API
+            Purpose: Bean validation (JSR-380) annotations like @NotBlank, @Min, @Pattern.
+            Used to validate secret configurations at startup (e.g., JWT key length).
+            Security note: Catching misconfigured secrets at startup prevents
+            runtime failures that could expose error details to attackers.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+
+        <!--
+            JACKSON ANNOTATIONS
+            Purpose: @JsonIgnore, @JsonProperty, etc. for controlling JSON serialization.
+            Security note: Used to ensure sensitive fields (passwords, API keys)
+            are never included in API responses or logs, even if the object is
+            accidentally serialized.
+        -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-annotations</artifactId>
+        </dependency>
+
+        <!-- ========================================
+             TEST DEPENDENCIES (scope: test)
+             These are NOT included in production builds.
+             ======================================== -->
+
+        <!--
+            SPRING BOOT STARTER - TEST
+            Purpose: JUnit 5, Mockito, Spring Test context, TestRestTemplate, MockMvc.
+            Security note: Test secrets (H2, in-memory Vault) should NEVER resemble
+            production secrets. Use clearly fake values like "test-secret-key".
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!--
+            H2 DATABASE (TEST SCOPE ONLY)
+            Purpose: In-memory database for integration tests.
+            Security note: H2 is for testing ONLY. Never use H2 in production.
+            Even the test H2 should not contain real data. Ensure test data
+            is clearly synthetic and non-sensitive.
+        -->
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <!--
+                Spring Boot Maven Plugin packages the app as an executable JAR
+                with embedded Tomcat. Supports layered JARs for efficient
+                Docker images (base layer: dependencies, application layer: code).
+                Security note: Use 'layers' mode for container builds to minimize
+                image size and attack surface.
+            -->
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+                <configuration>
+                    <excludes>
+                        <!--
+                            Exclude devtools from production builds — it can
+                            expose class reloading endpoints and should not be
+                            deployed to production environments.
+                        -->
+                        <exclude>
+                            <groupId>org.springframework.boot</groupId>
+                            <artifactId>spring-boot-devtools</artifactId>
+                        </exclude>
+                    </excludes>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>
