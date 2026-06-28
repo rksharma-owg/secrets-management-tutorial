@@ -1,0 +1,223 @@
+# =============================================================================
+# 01-vault-install.yaml - HashiCorp Vault Reference Deployment
+# =============================================================================
+#
+# IMPORTANT: This file is for REFERENCE ONLY. In production, you should install
+# Vault using the official Helm chart, which provides a complete, production-ready
+# deployment with HA, auto-unseal, and TLS configuration.
+#
+# Recommended installation command:
+#   helm repo add hashicorp https://helm.releases.hashicorp.com
+#   helm install vault hashicorp/vault \
+#     --namespace vault \
+#     --create-namespace \
+#     --set server.dev.enabled=false \
+#     --set server.ha.enabled=true \
+#     --set server.ha.replicas=3
+#
+# This manifest shows the KEY CONCEPTS behind a Vault deployment so you
+# understand what the Helm chart creates on your behalf.
+# =============================================================================
+
+---
+# ---------------------------------------------------------------------------
+# ServiceAccount: Vault needs its own identity for API server communication
+# ---------------------------------------------------------------------------
+# Vault's Kubernetes auth method uses this ServiceAccount to verify pod
+# identities. The ServiceAccount token is mounted into Vault pods and used
+# to validate other ServiceAccount tokens presented by client applications.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vault
+  namespace: vault
+  labels:
+    app.kubernetes.io/name: vault
+    app.kubernetes.io/component: secrets-engine
+---
+# ---------------------------------------------------------------------------
+# ServiceAccount: For the Vault Agent Injector (mutating webhook)
+# ---------------------------------------------------------------------------
+# The injector runs as a Kubernetes Mutating Admission Webhook. It intercepts
+# pod creation requests and injects a Vault Agent sidecar container when the
+# appropriate annotations are present on the pod.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vault-agent-injector
+  namespace: vault
+  labels:
+    app.kubernetes.io/name: vault-agent-injector
+    app.kubernetes.io/component: admission-webhook
+---
+# ---------------------------------------------------------------------------
+# ConfigMap: Vault server configuration
+# ---------------------------------------------------------------------------
+# This ConfigMap stores the Vault server configuration (HCL format). In a
+# real Helm-based install, this is auto-generated. Key settings shown here:
+#   - listener: TCP listener with TLS (required in production)
+#   - storage: Raft storage for HA (consul/file also available)
+#   - disable_mlock: Set false in production; true only for dev
+#   - api_addr: Address clients use to reach Vault
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vault-config
+  namespace: vault
+  labels:
+    app.kubernetes.io/name: vault
+data:
+  vault.hcl: |
+    # UI configuration - disable in production or protect with auth
+    ui = true
+
+    # Cluster listener for Raft communication between Vault nodes
+    listener "tcp" {
+      address       = "0.0.0.0:8200"
+      cluster_address = "0.0.0.0:8201"
+      # In production, use tls_cert_file and tls_key_file instead
+      tls_disable   = 1
+    }
+
+    # Raft integrated storage - provides HA and automatic failover
+    # Each Vault node stores a copy of the data; leader election is automatic
+    storage "raft" {
+      path    = "/vault/data"
+      # In HA mode, you'd specify retry_join for peer discovery:
+      # retry_join {
+      #   leader_api_addr = "http://vault-0.vault-internal:8200"
+      # }
+      # retry_join {
+      #   leader_api_addr = "http://vault-1.vault-internal:8200"
+      # }
+    }
+
+    # API address that clients (and the Agent Injector) use to reach Vault
+    api_addr = "http://vault.vault.svc.cluster.local:8200"
+    cluster_addr = "http://vault-internal.vault.svc.cluster.local:8201"
+
+    # Disable mlock only for development! In production, keep mlock enabled
+    # to prevent Vault memory from being swapped to disk.
+    disable_mlock = true
+---
+# ---------------------------------------------------------------------------
+# Deployment: Vault Server (Reference - Single Node)
+# ---------------------------------------------------------------------------
+# This is a SIMPLIFIED single-node deployment for educational purposes.
+# The Helm chart creates a StatefulSet with multiple replicas, proper
+# anti-affinity rules, persistent volume claims, and init containers
+# for auto-unseal configuration.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vault
+  namespace: vault
+  labels:
+    app.kubernetes.io/name: vault
+    app.kubernetes.io/component: secrets-engine
+spec:
+  # In production, use a StatefulSet with replicas: 3 for HA
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: vault
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: vault
+      # These annotations configure the Pod for Vault Agent auto-auth.
+      # The Vault Agent Injector can also inject Vault into OTHER pods,
+      # but for the Vault server itself, we configure it directly.
+      annotations:
+        # The Vault server reads its config from this ConfigMap
+        checksum/config: vault-config
+    spec:
+      serviceAccountName: vault
+      containers:
+        - name: vault
+          image: hashicorp/vault:1.17.4
+          ports:
+            - containerPort: 8200
+              name: http
+              protocol: TCP
+            - containerPort: 8201
+              name: cluster
+              protocol: TCP
+          # Vault readiness probe checks if the server is unsealed and ready
+          readinessProbe:
+            httpGet:
+              path: /v1/sys/health?standbyok=true&sealedcode=204&uninitcode=204
+              port: 8200
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          env:
+            # VAULT_ADDR tells the Vault CLI inside the container where to connect
+            - name: VAULT_ADDR
+              value: "http://127.0.0.1:8200"
+            # Skip TLS verification only for dev; never in production
+            - name: VAULT_SKIP_VERIFY
+              value: "true"
+          volumeMounts:
+            # Mount the server configuration from the ConfigMap
+            - name: vault-config
+              mountPath: /vault/config
+              readOnly: true
+            # Persistent storage for Raft data
+            # In production, use a PersistentVolumeClaim (PVC)
+            - name: vault-data
+              mountPath: /vault/data
+          # Resource limits are CRITICAL for Vault - it handles sensitive data
+          # and should have guaranteed resources to prevent OOM kills
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          # Security context: run as non-root user (vault user, uid 100)
+          # This is a defense-in-depth measure
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 100
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+      volumes:
+        - name: vault-config
+          configMap:
+            name: vault-config
+        - name: vault-data
+          # In production, use a PersistentVolumeClaim:
+          # persistentVolumeClaim:
+          #   claimName: vault-data
+          emptyDir: {}
+---
+# ---------------------------------------------------------------------------
+# Service: Expose Vault within the cluster
+# ---------------------------------------------------------------------------
+# This Service allows other pods (and the Agent Injector) to communicate
+# with Vault. In production, you'd also create an Ingress or LoadBalancer
+# Service for external access, protected by TLS and auth.
+apiVersion: v1
+kind: Service
+metadata:
+  name: vault
+  namespace: vault
+  labels:
+    app.kubernetes.io/name: vault
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8200
+      targetPort: 8200
+      protocol: TCP
+    - name: cluster
+      port: 8201
+      targetPort: 8201
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: vault

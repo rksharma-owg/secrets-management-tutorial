@@ -1,0 +1,163 @@
+# =============================================================================
+# Docker Compose — Secrets Management Tutorial
+# =============================================================================
+#
+# IMPORTANT: This file contains NO actual secrets. All sensitive values are
+# placeholders or bootstrapping config only. In a real production setup:
+#   - Use Docker Secrets (Swarm) or Kubernetes Secrets
+#   - Inject secrets via Vault Agent sidecar / Vault CSI provider
+#   - Use cloud IAM roles (AWS IRSA, GCP Workload Identity, Azure Pod Identity)
+#   - Never pass DB passwords, API keys, or tokens in environment variables
+#
+# The services below are configured for LOCAL LEARNING ONLY. The Vault service
+# runs in "dev mode" which stores secrets in-memory and uses a well-known token.
+# =============================================================================
+
+services:
+  # --------------------------------------------------------------------------
+  # PostgreSQL — The database our apps connect to
+  # --------------------------------------------------------------------------
+  # NOTE: The POSTGRES_PASSWORD below is a placeholder for local development.
+  # In production, use Docker Secrets or a managed database with IAM auth.
+  # --------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: tutorial-postgres
+    restart: unless-stopped
+    environment:
+      # These are BOOTSTRAP values for local dev only.
+      # In production, POSTGRES_PASSWORD would come from a secret manager.
+      POSTGRES_DB: ${DATABASE_NAME:-myapp}
+      POSTGRES_USER: ${DATABASE_USER:-appuser}
+      # SECURITY: This password is intentionally weak for tutorial purposes.
+      # NEVER use hardcoded passwords in production docker-compose files.
+      POSTGRES_PASSWORD: ${DATABASE_PASSWORD:-dev-only-password}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DATABASE_USER:-appuser} -d ${DATABASE_NAME:-myapp}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - tutorial-net
+
+  # --------------------------------------------------------------------------
+  # HashiCorp Vault — Secrets management server (DEV MODE — for learning only)
+  # --------------------------------------------------------------------------
+  # SECURITY WARNING: `vault server -dev` is UNFIT for production use.
+  #   - Stores all secrets in-memory (lost on restart)
+  #   - Unseals automatically (no Shamir key splitting)
+  #   - Uses a well-known root token
+  #   - Listens on 0.0.0.0 (no TLS by default)
+  # For production, use Vault with: integrated storage, TLS, auto-unseal,
+  # Kubernetes auth, audit logging, and proper access policies.
+  # --------------------------------------------------------------------------
+  vault:
+    image: vault:1.15
+    container_name: tutorial-vault
+    restart: unless-stopped
+    cap_add:
+      - IPC_LOCK  # Prevents Vault secrets from being swapped to disk
+    command: server -dev -dev-root-token-id="dev-only-token"
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: dev-only-token  # Used only for local learning!
+      VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
+    ports:
+      - "8200:8200"
+    volumes:
+      - vault_data:/vault/file  # Dev mode uses in-memory, but we mount for persistence
+    healthcheck:
+      test: ["CMD", "vault", "status"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    networks:
+      - tutorial-net
+
+  # --------------------------------------------------------------------------
+  # Python App — FastAPI application that retrieves secrets from Vault/AWS/Azure
+  # --------------------------------------------------------------------------
+  # Secrets are NOT passed via environment. The app reads SECRET_PROVIDER at
+  # startup and connects to the appropriate secrets backend to fetch them.
+  # --------------------------------------------------------------------------
+  python-app:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.python
+    container_name: tutorial-python-app
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      vault:
+        condition: service_healthy
+    environment:
+      # SECRET_PROVIDER tells the app WHERE to fetch secrets (vault, aws, azure).
+      # The actual secret values are NEVER in this file or the container image.
+      SECRET_PROVIDER: ${SECRET_PROVIDER:-vault}
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: ${VAULT_TOKEN:-dev-only-token}  # Placeholder — use Vault Agent in prod!
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      # NOTE: AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY are intentionally omitted.
+      # In production, use IAM roles (IRSA on EKS, ECS task roles, EC2 instance profiles).
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
+      DATABASE_NAME: ${DATABASE_NAME:-myapp}
+      APP_ENV: ${APP_ENV:-development}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    ports:
+      - "8000:8000"
+    networks:
+      - tutorial-net
+
+  # --------------------------------------------------------------------------
+  # Node.js App — Express application demonstrating the same secrets retrieval
+  # --------------------------------------------------------------------------
+  # Like the Python app, this retrieves secrets at runtime from the configured
+  # provider. No secrets are embedded in the image or this compose file.
+  # --------------------------------------------------------------------------
+  nodejs-app:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.nodejs
+    container_name: tutorial-nodejs-app
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      vault:
+        condition: service_healthy
+    environment:
+      SECRET_PROVIDER: ${SECRET_PROVIDER:-vault}
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: ${VAULT_TOKEN:-dev-only-token}  # Placeholder — use Vault Agent in prod!
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      # NOTE: No AWS credentials here. Use IAM roles or ECS/EC2 metadata in production.
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
+      DATABASE_NAME: ${DATABASE_NAME:-myapp}
+      NODE_ENV: ${APP_ENV:-development}
+    ports:
+      - "3000:3000"
+    networks:
+      - tutorial-net
+
+# =============================================================================
+# Networks — Isolated bridge network for inter-service communication
+# =============================================================================
+networks:
+  tutorial-net:
+    driver: bridge
+    name: secrets-tutorial-net
+
+# =============================================================================
+# Volumes — Persist data beyond container lifecycle
+# =============================================================================
+volumes:
+  postgres_data:
+    name: tutorial-postgres-data
+  vault_data:
+    name: tutorial-vault-data

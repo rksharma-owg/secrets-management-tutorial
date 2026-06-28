@@ -1,0 +1,75 @@
+# =============================================================================
+# Multi-stage Dockerfile for Python Secrets Management Tutorial App
+# =============================================================================
+# SECURITY NOTE: This image contains NO secrets, credentials, or API keys.
+# Secrets are retrieved at runtime from a secrets provider (Vault, AWS SM, etc.)
+# via environment variables that point to the provider, never to the secrets themselves.
+# Never bake secrets into images — they persist in layers and can be extracted.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Stage 1: Builder — install dependencies in a separate layer for caching
+# ---------------------------------------------------------------------------
+FROM python:3.12-slim AS builder
+
+WORKDIR /build
+
+# Install build dependencies (cleaned up later)
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends gcc libpq-dev && \
+    rm -rf /var/lib/apt/lists/*
+
+# Copy only dependency manifests first (leverages Docker layer caching)
+COPY requirements.txt .
+
+# Install Python dependencies into a dedicated virtual env
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+RUN pip install --no-cache-dir -r requirements.txt
+
+# ---------------------------------------------------------------------------
+# Stage 2: Production — minimal image with only the app and runtime deps
+# ---------------------------------------------------------------------------
+FROM python:3.12-slim AS production
+
+# Labels for image metadata (no secrets here either)
+LABEL maintainer="secrets-tutorial"
+LABEL description="Python app that retrieves secrets at runtime"
+
+# Create a non-root user for security (prevents privilege escalation attacks)
+RUN groupadd --gid 10001 appuser && \
+    useradd --uid 10001 --gid appuser --shell /bin/false --create-home appuser
+
+WORKDIR /app
+
+# Copy the pre-built virtual environment from the builder stage
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Install only the runtime shared library needed for PostgreSQL (no build tools)
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends libpq5 && \
+    rm -rf /var/lib/apt/lists/*
+
+# Copy ONLY the application source code — nothing else
+COPY app/ ./app/
+
+# SECURITY: These env vars configure WHERE to find secrets, not the secrets themselves.
+# At runtime, mount secrets via Vault Agent, AWS IAM roles, or file-based injection.
+ENV SECRET_PROVIDER=vault \
+    VAULT_ADDR=http://vault:8200 \
+    APP_ENV=production \
+    LOG_LEVEL=INFO
+
+# Switch to the non-root user before running the application
+USER appuser
+
+# Expose the application port
+EXPOSE 8000
+
+# Health check: verify the app is responding (secrets must be accessible for this to pass)
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" || exit 1
+
+# Run with uvicorn — no secrets are passed on the command line
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

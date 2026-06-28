@@ -1,0 +1,292 @@
+# =============================================================================
+# 02-vault-agent-injector.yaml - Vault Agent Sidecar Injection Example
+# =============================================================================
+#
+# This file demonstrates how the Vault Agent Injector mutates pods at creation
+# time to inject secrets as environment variables, files, or both.
+#
+# HOW THE INJECTOR WORKS (Pod Startup Flow):
+#
+#   1. You create a Pod/Deployment with special annotations (vault.hashicorp.com/*)
+#   2. The Kubernetes API server sends the pod spec to the Mutating Admission Webhook
+#   3. The Vault Agent Injector (running as a webhook service) intercepts the request
+#   4. The injector ADDS two containers to the pod:
+#      a. vault-agent: Authenticates to Vault, renews tokens, fetches secrets
+#      b. vault-agent-injector-init: An init container that waits for secrets to
+#         be written to the shared volume before the main container starts
+#   5. The injector also adds a shared emptyDir volume between containers
+#   6. The main application container reads secrets from the shared volume
+#   7. The vault-agent sidecar continues running, renewing leases/tokens
+#
+# KEY BENEFITS:
+#   - No secrets in environment variables visible via `kubectl exec env`
+#   - Automatic token renewal and lease re-authentication
+#   - Secrets are fetched at pod startup; no SDK changes needed in your app
+#   - Centralized secret management in Vault (not scattered in K8s Secrets)
+#
+# PREREQUISITES:
+#   - Vault must be installed and configured (see 01-vault-install.yaml)
+#   - Vault Agent Injector webhook must be installed (via Helm chart)
+#   - Vault Kubernetes auth method must be enabled and configured
+#   - A Vault policy granting access to the desired secrets must exist
+# =============================================================================
+
+---
+# ---------------------------------------------------------------------------
+# ConfigMap: Vault Agent configuration template
+# ---------------------------------------------------------------------------
+# This ConfigMap provides the Vault Agent configuration that the sidecar uses.
+# In most setups, the annotations on the pod are sufficient, and you don't need
+# a separate ConfigMap. This is shown here for educational purposes to
+# illustrate the underlying agent configuration structure.
+#
+# The agent configuration has two main sections:
+#   1. auto_auth: How the agent authenticates to Vault (Kubernetes auth method)
+#   2. template: How secrets are rendered (file-based templates)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vault-agent-config
+  namespace: demo-app
+  labels:
+    app.kubernetes.io/name: vault-agent-config
+    app.kubernetes.io/component: secrets-config
+data:
+  agent-config.hcl: |
+    # =====================================================================
+    # AUTO AUTH: Kubernetes authentication method
+    # =====================================================================
+    # The agent uses the pod's ServiceAccount JWT token to authenticate to
+    # Vault. Vault validates the JWT against the Kubernetes API server to
+    # verify the pod's identity (namespace, service account, labels, etc.)
+    # and then returns a Vault token based on the associated Vault policy.
+    auto_auth {
+      method "kubernetes" {
+        mount_path = "auth/kubernetes"
+        config = {
+          role = "demo-app-role"    # Vault role mapped to this ServiceAccount
+        }
+      }
+
+      # The sink is where the authenticated token is stored locally.
+      # The agent shares this token with other containers via the shared volume.
+      sink "file" {
+        config = {
+          path = "/vault/.vault-token"
+        }
+      }
+    }
+
+    # =====================================================================
+    # TEMPLATE: Secret rendering configuration
+    # =====================================================================
+    # Each template block defines a secret to fetch from Vault and how to
+    # render it. The agent uses Consul Template syntax to query Vault's API
+    # and write the result to a file in the shared emptyDir volume.
+    template {
+      source      = "/etc/vault/templates/db-creds.ctmpl"
+      destination = "/vault/secrets/db-credentials"
+    }
+    template {
+      source      = "/etc/vault/templates/api-key.ctmpl"
+      destination = "/vault/secrets/api-key"
+    }
+---
+# ---------------------------------------------------------------------------
+# ConfigMap: Consul Template files for secret rendering
+# ---------------------------------------------------------------------------
+# These templates use Consul Template syntax to query Vault's KV store and
+# render the secret values as key=value pairs or raw values. When using the
+# annotation-based injection (shown in the Deployment below), you typically
+# don't need these files - the injector handles template generation automatically.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vault-templates
+  namespace: demo-app
+  labels:
+    app.kubernetes.io/name: vault-templates
+data:
+  # Database credentials template - fetches from Vault KV v2
+  db-creds.ctmpl: |
+    {{- with secret "secret/data/demo-app/database" -}}
+    DB_HOST={{ .Data.data.host }}
+    DB_PORT={{ .Data.data.port }}
+    DB_USERNAME={{ .Data.data.username }}
+    DB_PASSWORD={{ .Data.data.password }}
+    DB_CONNECTION_STRING=postgresql://{{ .Data.data.username }}:{{ .Data.data.password }}@{{ .Data.data.host }}:{{ .Data.data.port }}/mydb
+    {{- end }}
+
+  # API key template - fetches a single secret from Vault KV v2
+  api-key.ctmpl: |
+    {{- with secret "secret/data/demo-app/api-keys" -}}
+    API_KEY={{ .Data.data.stripe_api_key }}
+    {{- end }}
+
+---
+# ---------------------------------------------------------------------------
+# ServiceAccount: Identity for the demo application pod
+# ---------------------------------------------------------------------------
+# This ServiceAccount is used by the Vault Agent Injector to authenticate to
+# Vault's Kubernetes auth method. Vault maps this ServiceAccount to a Vault
+# role and policy that controls which secrets the pod can access.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: demo-app-sa
+  namespace: demo-app
+  labels:
+    app.kubernetes.io/name: demo-app
+    app.kubernetes.io/component: application
+---
+# ---------------------------------------------------------------------------
+# Deployment: Sample application with Vault Agent injection via annotations
+# ---------------------------------------------------------------------------
+# This Deployment demonstrates the RECOMMENDED way to use the injector:
+# via pod annotations. Each annotation starts with "vault.hashicorp.com/" and
+# configures a specific aspect of the sidecar injection.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-app
+  namespace: demo-app
+  labels:
+    app.kubernetes.io/name: demo-app
+    app.kubernetes.io/component: application
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: demo-app
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: demo-app
+      # ====================================================================
+      # VAULT AGENT INJECTOR ANNOTATIONS
+      # ====================================================================
+      # These annotations are read by the Vault Agent Injector webhook.
+      # They control which secrets to inject and how to format them.
+      #
+      # GENERAL SETTINGS:
+      annotations:
+        # Enable sidecar injection for this pod
+        vault.hashicorp.com/agent-inject: "true"
+
+        # Vault address - the agent sidecar connects here to authenticate
+        # and fetch secrets. Use the internal cluster service for security.
+        vault.hashicorp.com/agent-inject-secret-processor: "true"
+
+        # The Vault role that maps this ServiceAccount to a Vault policy.
+        # This role is configured in Vault (not in Kubernetes):
+        #   vault write auth/kubernetes/role/demo-app-role \
+        #     bound_service_account_names=demo-app-sa \
+        #     bound_service_account_namespaces=demo-app \
+        #     policies=demo-app-policy \
+        #     ttl=24h
+        vault.hashicorp.com/role: "demo-app-role"
+
+        # ---------------------------------------------------------------
+        # ANNOTATION 1: Database Credentials (as environment variables)
+        # ---------------------------------------------------------------
+        # The annotation key format is:
+        #   vault.hashicorp.com/agent-inject-secret-<arbitrary-name>
+        # The value is the Vault path to the secret (KV v2 includes data/ prefix)
+        #
+        # This injects the entire secret as a file, but we also use
+        # agent-inject-template to render each value as an env var.
+        vault.hashicorp.com/agent-inject-secret-database-creds: "secret/data/demo-app/database"
+
+        # Customize the template for database credentials.
+        # We render each field as a shell export so the init container
+        # can source them as environment variables before the app starts.
+        vault.hashicorp.com/agent-inject-template-database-creds: |
+          {{- with secret "secret/data/demo-app/database" -}}
+          export DB_HOST="{{ .Data.data.host }}"
+          export DB_PORT="{{ .Data.data.port }}"
+          export DB_USERNAME="{{ .Data.data.username }}"
+          export DB_PASSWORD="{{ .Data.data.password }}"
+          {{- end }}
+
+        # Set the file path where the rendered template is written.
+        # The shared emptyDir volume is mounted at /vault/secrets/
+        vault.hashicorp.com/agent-inject-secret-database-creds-file: "/vault/secrets/database-env"
+
+        # ---------------------------------------------------------------
+        # ANNOTATION 2: API Keys (as a single file)
+        # ---------------------------------------------------------------
+        # Inject an API key secret and write it as a file.
+        # The application can read this file directly.
+        vault.hashicorp.com/agent-inject-secret-api-key: "secret/data/demo-app/api-keys"
+        vault.hashicorp.com/agent-inject-template-api-key: |
+          {{- with secret "secret/data/demo-app/api-keys" -}}
+          STRIPE_API_KEY={{ .Data.data.stripe_api_key }}
+          {{- end }}
+        vault.hashicorp.com/agent-inject-secret-api-key-file: "/vault/secrets/api-keys"
+
+        # ---------------------------------------------------------------
+        # ANNOTATION 3: JWT Signing Secret
+        # ---------------------------------------------------------------
+        # Inject a JWT secret used for signing tokens.
+        vault.hashicorp.com/agent-inject-secret-jwt-config: "secret/data/demo-app/jwt"
+        vault.hashicorp.com/agent-inject-template-jwt-config: |
+          {{- with secret "secret/data/demo-app/jwt" -}}
+          JWT_SECRET="{{ .Data.data.signing_key }}"
+          JWT_ISSUER="{{ .Data.data.issuer }}"
+          JWT_EXPIRY_HOURS="{{ .Data.data.expiry_hours }}"
+          {{- end }}
+        vault.hashicorp.com/agent-inject-secret-jwt-config-file: "/vault/secrets/jwt-config"
+
+        # ---------------------------------------------------------------
+        # ANNOTATION 4: Command to source the env file
+        # ---------------------------------------------------------------
+        # This tells the injector to wrap the container's command so it
+        # first sources the generated env file, then runs the actual app.
+        # This is how secrets become real environment variables.
+        vault.hashicorp.com/command: "/vault/secrets/database-env &&"
+
+    spec:
+      # This ServiceAccount's JWT token is used for Vault Kubernetes auth
+      serviceAccountName: demo-app-sa
+      containers:
+        - name: demo-app
+          image: my-registry/demo-app:latest
+          ports:
+            - containerPort: 8080
+              name: http
+              protocol: TCP
+          env:
+            # These env vars reference the files written by the vault-agent.
+            # The agent-injector's init container ensures these files exist
+            # before the main container starts.
+            - name: STRIPE_API_KEY_FILE
+              value: /vault/secrets/api-keys
+            - name: JWT_CONFIG_FILE
+              value: /vault/secrets/jwt-config
+          # Read-only root filesystem as a security best practice
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+          # The vault-agent sidecar writes secrets to this shared volume.
+          # Both the sidecar and the main container can access it.
+          volumeMounts:
+            - name: vault-secrets
+              mountPath: /vault/secrets
+              readOnly: true
+      volumes:
+        # This emptyDir volume is shared between the vault-agent sidecar
+        # and the main application container. It exists only in RAM
+        # (medium: Memory) so secrets never touch the node's disk.
+        - name: vault-secrets
+          emptyDir:
+            medium: Memory
+            sizeLimit: "64Mi"
